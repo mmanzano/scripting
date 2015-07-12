@@ -1,0 +1,215 @@
+#!/bin/bash
+# Number of parameters for this script
+if [[ $# -lt 1 ]] || [[ $# -gt 5 ]]; then
+  echo "Error: Number of paramaters invalid"       
+  echo "Sintaxis: initGitServer siteName [domain branch] [subdomainName]"
+  echo "if branch == master then subdomainName is setup to httpdocs"
+  echo "Examples:"
+  echo "initGitServer example"
+  echo "initGitServer example com develop"
+  echo "initGitServer example com develop demo"
+  exit 1
+fi
+
+function clean()
+{
+  file=$1
+  fileaux=$file.aux
+  sort $file | uniq > $fileaux
+  mv $fileaux $file
+}
+
+function validate_branch()
+{
+  actualBranch=$1
+  while read line
+  do
+    branch_unique $actualBranch $line
+  done < $gitBranchesDeployed
+}
+
+function branch_unique()
+{
+  currentBranch=$1
+  fileBranch=$4
+  if [[ $currentBranch = $fileBranch ]]; then
+    echo "Nothing to do"
+    echo "This branch already exists"
+    exit 3
+  fi
+}
+
+function validate_subdomain()
+{
+  actualSubdomain=$1
+  while read line
+  do
+    subdomain_unique $actualSubdomain $line
+  done < $gitBranchesDeployed
+}
+
+function subdomain_unique()
+{
+  currentSubdomain=$1
+  fileSiteName=$2
+  fileDomain=$3
+  fileBranch=$4
+  fileSubdomain=$2
+
+  if [[ $# -ge 5 ]]; then
+    fileSubdomain=$5
+    fileSubdomain=$fileSubdomain.$fileSiteName.$fileDomain
+  fi
+
+  if [[ $fileBranch = 'master' ]]; then
+    fileSubdomain=httpdocs
+  fi
+
+  if [[ $currentSubdomain = $fileSubdomain ]]; then
+    echo "Nothing to do"
+    echo "This subdomain already exists"
+    exit 3
+  fi
+
+
+}
+
+
+function user_messages()
+{
+  echo "Execute in your computer"
+  echo "git remote add server ssh://root@$HOSTNAME:$gitSiteDirectory"
+
+  if [[ $# -eq 1 ]]; then
+    echo "git push server master"
+  else
+    echo "git push server $branch"
+  fi
+
+  echo "Remember have got the keys for server root near for the push action"
+}
+
+function prepare_hook_git()
+{
+  cp -a $postUpdateFile.sample $postUpdateFile
+
+  echo -e "#!/bin/bash
+case \" \$1 \" in" > $postUpdateFile
+  while read line
+  do
+    variables $line
+
+echo -e "*'refs/heads/$branch'*)
+        echo \"Pulling $branch\"
+        unset GIT_DIR
+        cd $subdomainsGitDirectory || exit
+        git pull origin $branch
+        cd httpdocs
+        sh $preinstall
+
+	if ! [ -f $fileDeployed ]; then
+		rm -rf $httpdocsDirectory
+		ln -s $subdomainsHttpdocsGitDirectory $httpdocsDirectory
+		touch $fileDeployed
+	fi
+        ;;" >> $postUpdateFile
+  done < $gitBranchesDeployed
+echo -e "esac
+exec git update-server-info" >> $postUpdateFile
+}
+
+function variables()
+{
+  siteName=$1
+  domain=$2
+  branch=$3
+  subdomain=$siteName
+
+  if [[ $# -ge 4 ]]; then
+    subdomainName=$4
+    subdomain=$subdomainName.$siteName.$domain
+  fi
+
+  if [[ $branch = 'master' ]]; then
+    subdomain=httpdocs
+  fi
+
+  fileDeployed=$vhostsDirectory/$siteName.$domain/$subdomain/deployed
+
+  postUpdateFile=$gitDirectory/$siteName.git/hooks/post-update
+
+  subdomainsGitDirectory=$subdomainsDirectory/$siteName.$domain/$branch.$siteName.$domain
+  
+  httpdocsDirectory=$vhostsDirectory/$siteName.$domain/$subdomain
+
+  subdomainsHttpdocsGitDirectory=$subdomainsDirectory/$siteName.$domain/$branch.$siteName.$domain/httpdocs
+
+  preinstall=../$branch-deploy.sh
+}
+
+# directories
+
+gitDirectory=/opt/git
+
+vhostsDirectory=/var/www/vhosts
+
+subdomainsDirectory=$vhostsDirectory/subdomains
+
+siteName=$1
+
+gitSiteDirectory=$gitDirectory/$siteName.git
+
+gitBranchesDeployed=$gitSiteDirectory/branchesDeployed
+
+echo "The following directories was affected"
+echo "Created: $gitSiteDirectory"
+if [[ $# -ge 3 ]]; then
+  variables $1 $2 $3 $4
+  echo "Created: $subdomainsGitDirectory"
+  echo "Deleted: $httpdocsDirectory"
+  echo "Create a Symlink: $httpdocsDirectory -> $subdomainsHttpdocsGitDirectory"
+fi
+if [[ $# -eq 5 ]] && [[ $5 = '-script' ]] ; then
+  echo "Execute all without question"
+else
+  echo -n "Do you want continue? (Y/N) "
+  read response
+  if [[ $response = 'y' ]] || [[ $response = 'Y' ]]; then
+    echo -n "$httpdocsDirectory will be deleted. Are you sure? (Y/N) "
+    read confirmation
+    if [[ $confirmation = 'y' ]] || [[ $confirmation = 'Y' ]]; then
+  echo "Executing"
+    else
+      echo "Nothing was executed. Thanks."
+      exit 2
+    fi
+  else
+    echo "Nothing was executed. Thanks"
+    exit 2
+  fi
+fi
+
+if ! [[ -d $gitSiteDirectory ]]; then
+  mkdir -p $gitSiteDirectory || exit 1
+  cd $gitSiteDirectory || exit 1
+  git --bare init
+fi
+
+if [[ $# -ge 3 ]]; then
+  variables $1 $2 $3 $4
+  if [[ -f $gitBranchesDeployed ]]; then
+    validate_branch $branch
+    validate_subdomain $subdomain
+  fi
+  mkdir -p $subdomainsGitDirectory || exit 1
+  cd $subdomainsGitDirectory || exit 1
+  git init
+  git remote add origin $gitSiteDirectory
+  git checkout -b $branch
+  echo "$1 $2 $3 $4" >> $gitBranchesDeployed
+  clean $gitBranchesDeployed
+  user_messages
+  prepare_hook_git
+else
+  user_messages
+fi
